@@ -5,15 +5,18 @@ ThisBuild / scalaVersion := "2.13.3"
 ThisBuild / version := "0.1.0-SNAPSHOT"
 ThisBuild / organization := "leantyped"
 
-val grpcVersion = "1.34.0"
+val grpcVersion = "1.39.0"
 
-PB.targets in Compile := Seq(
-  scalapb.gen(grpc = true) -> (sourceManaged in Compile).value,
-  scalapb.zio_grpc.ZioCodeGenerator -> (sourceManaged in Compile).value
+val zioVersion = "1.0.10"
+
+Compile / PB.targets := Seq(
+  PB.gens.java("3.12.0") -> (Compile / sourceManaged).value / "scalapb",
+  scalapb.gen(grpc = true) -> (Compile / sourceManaged).value / "scalapb",
+  scalapb.zio_grpc.ZioCodeGenerator -> (Compile / sourceManaged).value / "scalapb"
 )
 
 val nixDockerSettings = List(
-  name := "sbt-nix-azzuro",
+  name := "azzuro",
   dockerCommands := Seq(
     Cmd("FROM", "base-jre:latest"),
     Cmd("COPY", "1/opt/docker/lib/*.jar", "/lib/"),
@@ -27,11 +30,14 @@ val nixDockerSettings = List(
     )
   )
 )
+ThisBuild / testFrameworks += new TestFramework("zio.test.sbt.ZTestFramework")
 
 lazy val root = (project in file("."))
+  .configs(IntegrationTest)
   .enablePlugins(JavaAppPackaging)
   .enablePlugins(DockerPlugin)
   .settings(
+    Defaults.itSettings,
     licenses += ("Apache-2.0", new URL(
       "https://www.apache.org/licenses/LICENSE-2.0.txt"
     )),
@@ -41,12 +47,22 @@ lazy val root = (project in file("."))
     ),
     libraryDependencies ++= Seq(
       "com.thesamet.scalapb" %% "scalapb-runtime-grpc" % scalapb.compiler.Version.scalapbVersion,
+      "com.thesamet.scalapb" %% "scalapb-runtime" % scalapb.compiler.Version.scalapbVersion % "protobuf",
       "io.grpc" % "grpc-netty" % grpcVersion
     ),
     libraryDependencies ++= Seq(
-      "com.google.protobuf" % "protobuf-java" % "3.13.0" % "protobuf"
+      "dev.zio" %% "zio-macros" % zioVersion
+    ),
+    libraryDependencies ++= Seq(
+      "com.google.protobuf" % "protobuf-java" % "3.13.0"
+    ),
+    libraryDependencies ++= Seq(
+      "dev.zio" %% "zio-test" % zioVersion % "it,test",
+      "dev.zio" %% "zio-test-sbt" % zioVersion % "it,test",
+      "dev.zio" %% "zio-test-magnolia" % zioVersion % "it,test" // optional
     ),
     scalacOptions ++= Seq(
+      "-Ymacro-annotations",
       "-Wconf:src=src_managed/.*:silent",
       "-Wconf:any:error"
     )
