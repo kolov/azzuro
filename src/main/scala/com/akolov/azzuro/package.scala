@@ -1,6 +1,10 @@
 package com.akolov
-import zio._ 
+import zio._
+import zio.logging.Logging
+import zio.clock.Clock
 
 package object azzuro {
-  type AIO[A] = ZIO[ZEnv, AzzuroError, A]
+  type AppEnv = Clock with Logging
+
+  type AIO[A] = ZIO[AppEnv, AzzuroError, A]
 }

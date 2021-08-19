@@ -33,15 +33,16 @@ object RegisterCommandSpec
 
       
 
-      val io: ZIO[ZEnv with Has[AzzuroCommands.Service],AzzuroError,Unit]   = 
+      val io: ZIO[AppEnv with Has[AzzuroCommands.Service],AzzuroError,Unit]   = 
         for {
           _ <- AzzuroCommands.registerHandler("asd", console.putStrLn("GotCommand"))
           response <- AzzuroCommands.sendCommand(cmd)
           _ <- console.putStr(response.toString()).mapError(UnexpectedError.apply)
         } yield ()
          
+
       for {
-        response <- io.provideCustomLayer(ZEnv.live  >+> clientLayer >+> AzzuroCommands.live)
+        response <- io.provideCustomLayer((ZEnv.live  >+> clientLayer) >>> AzzuroCommands.live)
         _ <- ZIO.sleep(2.seconds)
       } yield assert(response.toString)(
         equalTo("ss")

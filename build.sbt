@@ -51,13 +51,18 @@ lazy val root = (project in file("."))
       "io.grpc" % "grpc-netty" % grpcVersion
     ),
     libraryDependencies ++= Seq(
-      "dev.zio" %% "zio-macros" % zioVersion
+      "dev.zio" %% "zio-macros" % zioVersion,
+      "dev.zio" %% "zio-logging-slf4j" % "0.5.11"
     ),
     libraryDependencies ++= Seq(
       "com.google.protobuf" % "protobuf-java" % "3.13.0"
     ),
     libraryDependencies ++= Seq(
-      "dev.zio" %% "zio-test" % zioVersion % "it,test",
+       "ch.qos.logback" % "logback-classic" % "1.1.7"
+        
+    ),
+    libraryDependencies ++= Seq(
+    "dev.zio" %% "zio-test" % zioVersion % "it,test",
       "dev.zio" %% "zio-test-sbt" % zioVersion % "it,test",
       "dev.zio" %% "zio-test-magnolia" % zioVersion % "it,test" // optional
     ),

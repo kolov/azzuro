@@ -10,6 +10,9 @@ import io.axoniq.axonserver.grpc.command.command.CommandProviderInbound
 import io.grpc.Status
 import io.axoniq.axonserver.grpc.command.command.Command
 import io.axoniq.axonserver.grpc.command.command.CommandResponse
+import java.util.UUID
+import io.axoniq.axonserver.grpc.common.FlowControl
+import zio.logging._
 
 @accessible
 object AzzuroCommands {
@@ -20,11 +23,11 @@ object AzzuroCommands {
         name: String,
         handler: RIO[ZEnv, Unit]
     ): AIO[Unit]
+
     def sendCommand(command: Command): AIO[CommandResponse]
+
+    def sendPermits(count: Long): AIO[Unit]
   }
-
-  def safePrintLn(line: String) = console.putStrLn(line).orElseSucceed(())
-
   val live = ZLayer.fromEffect {
     for {
       q <- openCommandsStream
@@ -32,50 +35,79 @@ object AzzuroCommands {
         .service[ZioCommand.CommandServiceClient.ZService[Any, Any]]
     } yield new Service {
 
+      override def sendPermits(count: Long): AIO[Unit] = for {
+        outcome <- q.offer(
+          CommandProviderOutbound(request =
+            CommandProviderOutbound.Request
+              .FlowControl(FlowControl(clientId = "test", permits = count))
+          )
+        )
+        _ <- log.debug(s"Send $count permits")
+      } yield ()
+
       override def sendCommand(
           command: Command
       ): AIO[CommandResponse] =
-        ZioCommand.CommandServiceClient
-          .dispatch(command)
-          .provideLayer(ZLayer.succeed(clientLayer))
-          .mapError(GrpcError.apply)
+        for {
+          _ <- log.debug(s"Sending command $command")
+          response <- ZioCommand.CommandServiceClient
+            .dispatch(command)
+            .provideLayer(ZLayer.succeed(clientLayer))
+            .mapError(GrpcError.apply)
+          _ <- log.debug(s"Got command response: $response")
+        } yield response
 
       override def registerHandler(
-          name: String,
+          commandName: String,
           handler: RIO[ZEnv, Unit]
       ): AIO[Unit] = {
-        val subscription = CommandSubscription()
-        val req = CommandProviderOutbound.Request.Subscribe(subscription)
+
         for {
-          outcome <- q.offer(CommandProviderOutbound(req, "inscructionId"))
-          _ <- safePrintLn(s"Offered handler for [$name]: $outcome")
+          outcome <- q.offer(
+            CommandProviderOutbound(
+              CommandProviderOutbound.Request.Subscribe(
+                CommandSubscription(
+                  messageId = UUID.randomUUID.toString,
+                  command = commandName,
+                  componentName = "test",
+                  clientId = "1",
+                  loadFactor = 100
+                )
+              ),
+              instructionId = UUID.randomUUID.toString
+            )
+          )
+          _ <- log.debug(s"Offered handler for [$commandName]: $outcome")
         } yield ()
       }
-
     }
   }
 
   private def openCommandsStream: ZIO[Has[
     ZioCommand.CommandServiceClient.ZService[Any, Any]
-  ] with zio.console.Console, Nothing, Queue[
-    CommandProviderOutbound
-  ]] = {
+  ] with AppEnv, Nothing, Queue[CommandProviderOutbound]] = {
     for {
-      queue <- Queue.bounded[CommandProviderOutbound](1)
+      queue <- Queue.bounded[CommandProviderOutbound](10)
       commandsStream = ZStream
         .fromQueue[Any, io.grpc.Status, CommandProviderOutbound](
           queue
         )
         .tap(cmdOut =>
-          console.putStrLn(s"Got command from queue: $cmdOut").orElseSucceed(())
+          log.debug(s"Got command from queue: $cmdOut")
         )
-      _ <- commandsStream.runDrain.forkDaemon
-      stream = ZioCommand.CommandServiceClient
+
+      commonResponseStream = ZioCommand.CommandServiceClient
         .openStream(commandsStream)
-      _ <- stream
-        .tap(cmdIn => console.putStrLn(s"Got response from Axon: $cmdIn"))
+        .mapError(GrpcError.apply)
+      _ <- log.debug(s"About to start the response stream")
+      _ <- commonResponseStream
+        .tap((cmdIn: CommandProviderInbound) =>
+          log.debug(s"Got CommandProviderInbound from Axon: $cmdIn")
+        )
         .runDrain
+        .flatMap(_ => log.debug("Common response stream terminated"))
         .forkDaemon
+      _ <- log.debug(s"Started the response stream")
     } yield queue
   }
 }
