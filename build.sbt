@@ -6,14 +6,7 @@ ThisBuild / version := "0.1.0-SNAPSHOT"
 ThisBuild / organization := "leantyped"
 
 val grpcVersion = "1.39.0"
-
 val zioVersion = "1.0.10"
-
-Compile / PB.targets := Seq(
-  PB.gens.java("3.12.0") -> (Compile / sourceManaged).value / "scalapb",
-  scalapb.gen(grpc = true) -> (Compile / sourceManaged).value / "scalapb",
-  scalapb.zio_grpc.ZioCodeGenerator -> (Compile / sourceManaged).value / "scalapb"
-)
 
 val nixDockerSettings = List(
   name := "azzuro",
@@ -32,10 +25,7 @@ val nixDockerSettings = List(
 )
 ThisBuild / testFrameworks += new TestFramework("zio.test.sbt.ZTestFramework")
 
-lazy val root = (project in file("."))
-  .configs(IntegrationTest)
-  .enablePlugins(JavaAppPackaging)
-  .enablePlugins(DockerPlugin)
+lazy val core = (project in file("core"))
   .settings(
     Defaults.itSettings,
     licenses += ("Apache-2.0", new URL(
@@ -58,11 +48,10 @@ lazy val root = (project in file("."))
       "com.google.protobuf" % "protobuf-java" % "3.13.0"
     ),
     libraryDependencies ++= Seq(
-       "ch.qos.logback" % "logback-classic" % "1.1.7"
-        
+      "ch.qos.logback" % "logback-classic" % "1.1.7"
     ),
     libraryDependencies ++= Seq(
-    "dev.zio" %% "zio-test" % zioVersion % "it,test",
+      "dev.zio" %% "zio-test" % zioVersion % "it,test",
       "dev.zio" %% "zio-test-sbt" % zioVersion % "it,test",
       "dev.zio" %% "zio-test-magnolia" % zioVersion % "it,test" // optional
     ),
@@ -70,6 +59,21 @@ lazy val root = (project in file("."))
       "-Ymacro-annotations",
       "-Wconf:src=src_managed/.*:silent",
       "-Wconf:any:error"
+    ),
+    Compile / PB.targets := Seq(
+      PB.gens.java("3.12.0") -> (Compile / sourceManaged).value / "scalapb",
+      scalapb
+        .gen(grpc = true) -> (Compile / sourceManaged).value / "scalapb",
+      scalapb.zio_grpc.ZioCodeGenerator -> (Compile / sourceManaged).value / "scalapb"
     )
   )
+  .configs(IntegrationTest)
+
+lazy val `simple-example` = (project in file("example/simple"))
+  .dependsOn(core)
+  .enablePlugins(JavaAppPackaging)
+  .enablePlugins(DockerPlugin)
   .settings(nixDockerSettings: _*)
+
+lazy val root = (project in file("."))
+  .aggregate(`simple-example`, core)

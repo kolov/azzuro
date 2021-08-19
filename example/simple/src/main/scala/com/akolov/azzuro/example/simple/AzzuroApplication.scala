@@ -1,4 +1,4 @@
-package com.akolov.azzuro
+package com.akolov.azzuro.example.simple
 
 import io.axoniq.axonserver.grpc.command.command.Command
 import io.axoniq.axonserver.grpc.command.command.CommandServiceGrpc
@@ -16,8 +16,12 @@ import zio.logging.slf4j.Slf4jLogger
 import zio.logging.LogAnnotation
 import zio.logging.Logging
 import zio.clock.Clock
+import com.akolov.azzuro.AzzuroCommands
+import com.akolov.azzuro.AzzuroError
 
 object AzzuroApplication extends zio.App {
+
+  type AppEnv = Clock with Logging
 
   val channel = ZManagedChannel {
     val builder: ManagedChannelBuilder[_] = ManagedChannelBuilder
