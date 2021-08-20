@@ -18,10 +18,11 @@ import zio.logging.Logging
 import zio.clock.Clock
 import com.akolov.azzuro.AzzuroCommands
 import com.akolov.azzuro.AzzuroError
+import com.akolov.azzuro.NamedPromises
 
 object AzzuroApplication extends zio.App {
 
-  type AppEnv = Clock with Logging
+  type AppEnv = Clock with Logging with NamedPromises.Service
 
   val channel = ZManagedChannel {
     val builder: ManagedChannelBuilder[_] = ManagedChannelBuilder
@@ -35,31 +36,33 @@ object AzzuroApplication extends zio.App {
   ]] = ZioCommand.CommandServiceClient.live(channel)
 
   override def run(args: List[String]): URIO[ZEnv, ExitCode] = {
-    val env: ULayer[Logging] = Slf4jLogger.make { (context, message) =>
+    val logLayer: ULayer[Logging] = Slf4jLogger.make { (context, message) =>
       LogAnnotation.CorrelationId.render(
         context.get(LogAnnotation.CorrelationId)
       ) match {
         case "undefined-correlation-id" => message
         case correlationId =>
           "[correlation-id = %s] %s".format(correlationId, message)
-      } 
+      }
     }
 
-    (io.provideCustomLayer(
-      env >+>
-        Clock.live >+> clientLayer >+> AzzuroCommands.live
-    ) *>
-      ZIO.sleep(2.seconds)).fold(_ => ExitCode.failure, _ => ExitCode.success)
+    val customLayer = logLayer >+> NamedPromises.live >+>
+      Clock.live >+> clientLayer >+> AzzuroCommands.live
+
+    (io.provideCustomLayer(customLayer) *>
+      ZIO.sleep(2.seconds)).exitCode
   }
   case class MyCommand(name: String)
 
-  val io: ZIO[AppEnv with Has[AzzuroCommands.Service], AzzuroError, Unit] =
+  val io: ZIO[Has[
+    AzzuroCommands.Service
+  ] with com.akolov.azzuro.AppEnv, AzzuroError, Unit] =
     for {
       _ <- AzzuroCommands.sendPermits(100000)
       _ <- AzzuroCommands.registerHandler(
         "main",
         console.putStrLn("GotCommand")
-      ) 
+      )
       response <- AzzuroCommands.sendCommand(
         Command(
           messageIdentifier = UUID.randomUUID().toString,
@@ -69,7 +72,6 @@ object AzzuroApplication extends zio.App {
           timestamp = System.currentTimeMillis()
         )
       )
-
       _ <- ZIO.never
     } yield ()
 

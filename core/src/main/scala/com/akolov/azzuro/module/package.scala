@@ -4,7 +4,7 @@ import zio.logging.Logging
 import zio.clock.Clock
 
 package object azzuro {
-  type AppEnv = Clock with Logging
+  type AppEnv = Clock with Logging with NamedPromises.NamedPromises
 
-  type AIO[A] = ZIO[AppEnv, AzzuroError, A]
+  type AIO[A] = ZIO[Any, AzzuroError, A]
 }

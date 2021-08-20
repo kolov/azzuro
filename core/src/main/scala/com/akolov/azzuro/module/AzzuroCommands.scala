@@ -30,10 +30,8 @@ object AzzuroCommands {
     def sendPermits(count: Long): AIO[Unit]
   }
 
-  private def openCommandsStream(
-      waitingAcks: RefM[Map[String, Promise[Nothing, Unit]]]
-  ): ZIO[Has[
-    ZioCommand.CommandServiceClient.ZService[Any, Any]
+  private def openCommandsStream: ZIO[Has[
+    ZioCommand.CommandServiceClient.ZService[Any, Any]  
   ] with AppEnv, Nothing, Queue[CommandProviderOutbound]] = {
     for {
       queue <- Queue.bounded[CommandProviderOutbound](10)
@@ -59,19 +57,8 @@ object AzzuroCommands {
                 _,
                 _
               ) =>
-            waitingAcks.update { m =>
-              for {
-                _ <- m
-                  .get(instructionId)
-                  .map(p => {
-                    log.debug(s"Marking $instructionId") *> p.complete(ZIO.unit)
-                  })
-                  .getOrElse(
-                    log.debug(s"Did not find $instructionId") *> ZIO.unit
-                  )
-                updated <- ZIO.effectTotal(m.removed(instructionId))
-              } yield updated
-            }
+            NamedPromises.complete(instructionId)
+            
           case outbound => log.info(s"Not processing $outbound")
         }
         .runDrain
@@ -81,14 +68,11 @@ object AzzuroCommands {
     } yield queue
   }
 
-  val live = ZLayer.fromEffect {
+  val live = ZLayer.fromServicesM { 
+    (log: Logger[String], client: ZioCommand.CommandServiceClient.ZService[Any, Any], namedPromises: NamedPromises.Service) =>
     for {
-      waitingAcks <- RefM.make[Map[String, Promise[Nothing, Unit]]](Map.empty)
-      q <- openCommandsStream(waitingAcks)
-      clientLayer <- ZIO
-        .service[ZioCommand.CommandServiceClient.ZService[Any, Any]]
+      q <- openCommandsStream 
     } yield new Service {
-
       override def sendPermits(count: Long): AIO[Unit] = for {
         outcome <- q.offer(
           CommandProviderOutbound(request =
@@ -106,7 +90,7 @@ object AzzuroCommands {
           _ <- log.debug(s"Sending command $command")
           response <- ZioCommand.CommandServiceClient
             .dispatch(command)
-            .provideLayer(ZLayer.succeed(clientLayer))
+            .provideLayer(ZLayer.succeed(client))
             .mapError(GrpcError.apply)
           _ <- log.debug(s"Got command response: $response")
         } yield response
@@ -133,12 +117,8 @@ object AzzuroCommands {
               instructionId = instructionId
             )
           )
-          promise <- Promise.make[Nothing, Unit]
-          _ <- waitingAcks.update(m =>
-            ZIO.effectTotal(m.updated(instructionId, promise))
-          )
           _ <- log.debug(s"Waiting for $instructionId to complete")
-          _ <- promise.await
+          _ <- namedPromises.createAndAwait(instructionId)
           _ <- log.debug(s"Completed $instructionId")
         } yield ()
       }
