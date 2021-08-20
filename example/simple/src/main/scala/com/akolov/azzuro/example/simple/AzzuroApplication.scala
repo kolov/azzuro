@@ -59,8 +59,7 @@ object AzzuroApplication extends zio.App {
       _ <- AzzuroCommands.registerHandler(
         "main",
         console.putStrLn("GotCommand")
-      )
-      _ <- ZIO.sleep(4.second)
+      ) 
       response <- AzzuroCommands.sendCommand(
         Command(
           messageIdentifier = UUID.randomUUID().toString,

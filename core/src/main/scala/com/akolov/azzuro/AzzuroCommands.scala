@@ -13,6 +13,7 @@ import io.axoniq.axonserver.grpc.command.command.CommandResponse
 import java.util.UUID
 import io.axoniq.axonserver.grpc.common.FlowControl
 import zio.logging._
+import io.axoniq.axonserver.grpc.common.InstructionAck
 
 @accessible
 object AzzuroCommands {
@@ -28,9 +29,62 @@ object AzzuroCommands {
 
     def sendPermits(count: Long): AIO[Unit]
   }
+
+  private def openCommandsStream(
+      waitingAcks: RefM[Map[String, Promise[Nothing, Unit]]]
+  ): ZIO[Has[
+    ZioCommand.CommandServiceClient.ZService[Any, Any]
+  ] with AppEnv, Nothing, Queue[CommandProviderOutbound]] = {
+    for {
+      queue <- Queue.bounded[CommandProviderOutbound](10)
+      commandsStream = ZStream
+        .fromQueue[Any, io.grpc.Status, CommandProviderOutbound](
+          queue
+        )
+        .tap(cmdOut => log.debug(s"Got command from queue: $cmdOut"))
+
+      commonResponseStream = ZioCommand.CommandServiceClient
+        .openStream(commandsStream)
+        .mapError(GrpcError.apply)
+      _ <- log.debug(s"About to start the response stream")
+      _ <- commonResponseStream
+        .tap((cmdIn: CommandProviderInbound) =>
+          log.debug(s"Got CommandProviderInbound from Axon: $cmdIn")
+        )
+        .mapM {
+          case CommandProviderInbound(
+                CommandProviderInbound.Request.Ack(
+                  InstructionAck(instructionId, _, _, _)
+                ),
+                _,
+                _
+              ) =>
+            waitingAcks.update { m =>
+              for {
+                _ <- m
+                  .get(instructionId)
+                  .map(p => {
+                    log.debug(s"Marking $instructionId") *> p.complete(ZIO.unit)
+                  })
+                  .getOrElse(
+                    log.debug(s"Did not find $instructionId") *> ZIO.unit
+                  )
+                updated <- ZIO.effectTotal(m.removed(instructionId))
+              } yield updated
+            }
+          case outbound => log.info(s"Not processing $outbound")
+        }
+        .runDrain
+        .flatMap(_ => log.debug("Common response stream terminated"))
+        .forkDaemon
+      _ <- log.debug(s"Started the response stream")
+    } yield queue
+  }
+
   val live = ZLayer.fromEffect {
     for {
-      q <- openCommandsStream
+      waitingAcks <- RefM.make[Map[String, Promise[Nothing, Unit]]](Map.empty)
+      q <- openCommandsStream(waitingAcks)
       clientLayer <- ZIO
         .service[ZioCommand.CommandServiceClient.ZService[Any, Any]]
     } yield new Service {
@@ -62,6 +116,8 @@ object AzzuroCommands {
           handler: RIO[ZEnv, Unit]
       ): AIO[Unit] = {
 
+        val instructionId = UUID.randomUUID.toString
+
         for {
           outcome <- q.offer(
             CommandProviderOutbound(
@@ -74,40 +130,19 @@ object AzzuroCommands {
                   loadFactor = 100
                 )
               ),
-              instructionId = UUID.randomUUID.toString
+              instructionId = instructionId
             )
           )
-          _ <- log.debug(s"Offered handler for [$commandName]: $outcome")
+          promise <- Promise.make[Nothing, Unit]
+          _ <- waitingAcks.update(m =>
+            ZIO.effectTotal(m.updated(instructionId, promise))
+          )
+          _ <- log.debug(s"Waiting for $instructionId to complete")
+          _ <- promise.await
+          _ <- log.debug(s"Completed $instructionId")
         } yield ()
       }
+
     }
-  }
-
-  private def openCommandsStream: ZIO[Has[
-    ZioCommand.CommandServiceClient.ZService[Any, Any]
-  ] with AppEnv, Nothing, Queue[CommandProviderOutbound]] = {
-    for {
-      queue <- Queue.bounded[CommandProviderOutbound](10)
-      commandsStream = ZStream
-        .fromQueue[Any, io.grpc.Status, CommandProviderOutbound](
-          queue
-        )
-        .tap(cmdOut =>
-          log.debug(s"Got command from queue: $cmdOut")
-        )
-
-      commonResponseStream = ZioCommand.CommandServiceClient
-        .openStream(commandsStream)
-        .mapError(GrpcError.apply)
-      _ <- log.debug(s"About to start the response stream")
-      _ <- commonResponseStream
-        .tap((cmdIn: CommandProviderInbound) =>
-          log.debug(s"Got CommandProviderInbound from Axon: $cmdIn")
-        )
-        .runDrain
-        .flatMap(_ => log.debug("Common response stream terminated"))
-        .forkDaemon
-      _ <- log.debug(s"Started the response stream")
-    } yield queue
   }
 }
