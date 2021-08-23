@@ -10,28 +10,35 @@ case class Serde[A](ser: A => String, deser: String => Either[String, A])
 object CommandExecutor {
   type CommandExecutor = Has[Service]
 
+  case class CommandInfo(
+        name: String,
+        handler: PartialFunction[Any, Task[Any]],
+        serde: Serde[Any]
+    )
+    
   trait Service {
     def register(
         name: String,
         handler: PartialFunction[Any, Task[Any]],
         serde: Serde[Any]
     ): AIO[Unit]
+
+    def getCommandInfo(name: String) : AIO[Option[CommandInfo]]
     def execute(name: String, command: String): AIO[Any]
   }
 
   val live: ZLayer[Any, Nothing, CommandExecutor] = ZLayer.fromEffect {
 
-    case class CommandInfo(
-        name: String,
-        handler: PartialFunction[Any, Task[Any]],
-        serde: Serde[Any]
-    )
+    
 
     for {
       ref <- RefM.make(
         Map.empty[String, CommandInfo]
       )
     } yield new Service {
+
+      override def getCommandInfo(name: String): AIO[Option[CommandInfo]] = ref.get.map(_.get(name))
+
 
       override def register(
           name: String,

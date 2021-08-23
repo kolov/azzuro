@@ -16,31 +16,31 @@ import zio.logging._
 import io.axoniq.axonserver.grpc.common.InstructionAck
 import com.akolov.azzuro.common.CommandExecutor
 import com.akolov.azzuro.common.Serde
+import scala.reflect._
+import io.axoniq.axonserver.grpc.common.SerializedObject
+import com.google.protobuf.ByteString
 
 @accessible
 object AzzuroCommands {
   type AzzuroCommands = Has[Service]
 
   trait Service {
-    def registerHandler(
-        name: String,
+    def registerHandler[T: ClassTag](
         handler: PartialFunction[Any, Task[Any]],
         serde: Serde[Any]
     ): AIO[Unit]
 
-    def registerHandler[R](
-        name: String,
+    def registerHandler[T: ClassTag, R](
         handler: PartialFunction[Any, ZIO[R, Throwable, Any]],
         serde: Serde[Any],
         env: ZLayer[Any, Throwable, R]
-    ): AIO[Unit] = registerHandler(
-      name,
+    ): AIO[Unit] = registerHandler[T](
       handler.andThen { case io: ZIO[R, Throwable, Any] =>
         io.provideLayer(env)
       },
       serde
     )
-    def sendCommand(command: Command): AIO[CommandResponse]
+    def sendCommand[T: ClassTag](command: T): AIO[CommandResponse]
 
     def sendPermits(count: Long): AIO[Unit]
   }
@@ -83,15 +83,17 @@ object AzzuroCommands {
                 _,
                 _
               ) =>
-                val body = payload
-                .map(p => p.data.toStringUtf8)
-                .getOrElse("unknown")
+            val body = payload
+              .map(p => p.data.toStringUtf8)
+              .getOrElse("unknown")
 
-            log.debug(s"About to process command $name with body [$body], $payload") *>
-            CommandExecutor.execute(
-              name,
-              body
-            )
+            log.debug(
+              s"About to process command $name with body [$body], $payload"
+            ) *>
+              CommandExecutor.execute(
+                name,
+                body
+              )
           case outbound => log.info(s"Not processing $outbound")
         }
         .runDrain
@@ -121,10 +123,33 @@ object AzzuroCommands {
           _ <- log.debug(s"Send $count permits")
         } yield ()
 
-        override def sendCommand(
-            command: Command
-        ): AIO[CommandResponse] =
+        override def sendCommand[T: ClassTag](
+            cmd: T
+        ): AIO[CommandResponse] = {
+          val classTag = implicitly[ClassTag[T]]
+          val commandName = classTag.runtimeClass.getCanonicalName
+
           for {
+            commandInfoOpt <- commandsExecutor.getCommandInfo(commandName)
+            commandInfo <- ZIO
+              .fromOption(commandInfoOpt)
+              .orElseFail(CommandNotRegistered(commandName))
+            command = Command(
+              messageIdentifier = UUID.randomUUID().toString,
+              name = commandName,
+              payload = Some(
+                SerializedObject(
+                  `type` = commandName,
+                  data = ByteString.copyFrom(
+                    commandInfo.serde.ser(cmd),
+                    "utf-8"
+                  )
+                )
+              ),
+              componentName = "test",
+              timestamp = System.currentTimeMillis()
+            )
+
             _ <- log.debug(s"Sending command $command")
             response <- ZioCommand.CommandServiceClient
               .dispatch(command)
@@ -132,15 +157,16 @@ object AzzuroCommands {
               .mapError(GrpcError.apply)
             _ <- log.debug(s"Got command response: $response")
           } yield response
+        }
 
-        override def registerHandler(
-            commandName: String,
+        override def registerHandler[T: ClassTag](
             handler: PartialFunction[Any, Task[Any]],
             serde: Serde[Any]
         ): AIO[Unit] = {
 
           val instructionId = UUID.randomUUID.toString
-
+          val classTag = implicitly[ClassTag[T]]
+          val commandName = classTag.runtimeClass.getCanonicalName
           for {
             outcome <- q.offer(
               CommandProviderOutbound(

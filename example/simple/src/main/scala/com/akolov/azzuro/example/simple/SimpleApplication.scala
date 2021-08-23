@@ -34,6 +34,7 @@ object SimpleApplication extends zio.App {
 
   import UserService._
 
+  type CommandsEnv = Logging with Clock with UserService
   case class ChangePasswordCommand(oldPassword: String, newPassword: String)
 
   override def run(args: List[String]): URIO[ZEnv, ExitCode] = {
@@ -41,8 +42,7 @@ object SimpleApplication extends zio.App {
     val io =
       for {
         _ <- AzzuroCommands.sendPermits(100000)
-        _ <- AzzuroCommands.registerHandler(
-          "changePassword",
+        _ <- AzzuroCommands.registerHandler[ChangePasswordCommand, CommandsEnv](
           { case ChangePasswordCommand(oldPassword, newPassword) =>
             val io = if (oldPassword == "admin") {
               UserService.setPassword(newPassword) *> log.debug(
@@ -56,28 +56,14 @@ object SimpleApplication extends zio.App {
           Serde[Any](
             {
               case c: ChangePasswordCommand => c.asJson.noSpaces
-              case _                        => "inknown"
+              case _                        => "unknown"
             },
             s => decode[ChangePasswordCommand](s).left.map(_.toString)
           ),
           commandsLayer
         )
         response <- AzzuroCommands.sendCommand(
-          Command(
-            messageIdentifier = UUID.randomUUID().toString,
-            name = "changePassword",
-            payload = Some(
-              SerializedObject(
-                `type` = "changePassword",
-                data = ByteString.copyFrom(
-                  ChangePasswordCommand("admin", "alabala").asJson.noSpaces,
-                  "utf-8"
-                )
-              )
-            ),
-            componentName = "test",
-            timestamp = System.currentTimeMillis()
-          )
+          ChangePasswordCommand("admin", "alabala")
         )
         _ <- ZIO.never
       } yield ()

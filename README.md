@@ -1,9 +1,11 @@
 
-# azzuro
-ZIO-based Axon Server client
+# Azzuro
+ZIO-based Axon IQ Server client.
+Write Event Sourcing applications backed by the Axon IQ Server in pure FP Scala, without any of the Axon Framework.
+ 
 
-This is in early development stage. Start Axon Server locally and run:
+This is in early development stage. There is a sample application that registers a handler for one command type, then
+sends a commands and executes it. To run it, first start Axon Server locally and then:
 
     sbt "project simple-example" "runMain com.akolov.azzuro.example.simple.SimpleApplication"
-
-The example regsiters a command handler in the server, then  sends te command end executes the handler
+ 
