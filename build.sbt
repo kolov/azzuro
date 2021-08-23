@@ -7,6 +7,7 @@ ThisBuild / organization := "leantyped"
 
 val grpcVersion = "1.39.0"
 val zioVersion = "1.0.10"
+val circeVersion = "0.14.1"
 
 val nixDockerSettings = List(
   name := "azzuro",
@@ -25,9 +26,17 @@ val nixDockerSettings = List(
 )
 ThisBuild / testFrameworks += new TestFramework("zio.test.sbt.ZTestFramework")
 
+val commonSettings = Seq(
+  scalacOptions ++= Seq(
+    "-Ymacro-annotations",
+    "-Wconf:src=src_managed/.*:silent",
+    "-Wconf:any:error"
+  )
+)
 lazy val core = (project in file("core"))
   .settings(
     Defaults.itSettings,
+    commonSettings,
     licenses += ("Apache-2.0", new URL(
       "https://www.apache.org/licenses/LICENSE-2.0.txt"
     )),
@@ -55,11 +64,6 @@ lazy val core = (project in file("core"))
       "dev.zio" %% "zio-test-sbt" % zioVersion % "it,test",
       "dev.zio" %% "zio-test-magnolia" % zioVersion % "it,test" // optional
     ),
-    scalacOptions ++= Seq(
-      "-Ymacro-annotations",
-      "-Wconf:src=src_managed/.*:silent",
-      "-Wconf:any:error"
-    ),
     Compile / PB.targets := Seq(
       PB.gens.java("3.12.0") -> (Compile / sourceManaged).value / "scalapb",
       scalapb
@@ -73,7 +77,14 @@ lazy val `simple-example` = (project in file("example/simple"))
   .dependsOn(core)
   .enablePlugins(JavaAppPackaging)
   .enablePlugins(DockerPlugin)
-  .settings(nixDockerSettings: _*)
+  .settings(
+    commonSettings ++ nixDockerSettings,
+    libraryDependencies ++= Seq(
+      "io.circe" %% "circe-core",
+      "io.circe" %% "circe-generic",
+      "io.circe" %% "circe-parser"
+    ).map(_ % circeVersion)
+  )
 
 lazy val root = (project in file("."))
   .aggregate(`simple-example`, core)

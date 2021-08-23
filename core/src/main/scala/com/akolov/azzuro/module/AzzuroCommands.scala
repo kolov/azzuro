@@ -14,6 +14,8 @@ import java.util.UUID
 import io.axoniq.axonserver.grpc.common.FlowControl
 import zio.logging._
 import io.axoniq.axonserver.grpc.common.InstructionAck
+import com.akolov.azzuro.common.CommandExecutor
+import com.akolov.azzuro.common.Serde
 
 @accessible
 object AzzuroCommands {
@@ -22,17 +24,32 @@ object AzzuroCommands {
   trait Service {
     def registerHandler(
         name: String,
-        handler: RIO[ZEnv, Unit]
+        handler: PartialFunction[Any, Task[Any]],
+        serde: Serde[Any]
     ): AIO[Unit]
 
+    def registerHandler[R](
+        name: String,
+        handler: PartialFunction[Any, ZIO[R, Throwable, Any]],
+        serde: Serde[Any],
+        env: ZLayer[Any, Throwable, R]
+    ): AIO[Unit] = registerHandler(
+      name,
+      handler.andThen { case io: ZIO[R, Throwable, Any] =>
+        io.provideLayer(env)
+      },
+      serde
+    )
     def sendCommand(command: Command): AIO[CommandResponse]
 
     def sendPermits(count: Long): AIO[Unit]
   }
 
   private def openCommandsStream: ZIO[Has[
-    ZioCommand.CommandServiceClient.ZService[Any, Any]  
-  ] with AppEnv, Nothing, Queue[CommandProviderOutbound]] = {
+    ZioCommand.CommandServiceClient.ZService[Any, Any]
+  ] with AppEnv with Has[CommandExecutor.Service], Nothing, Queue[
+    CommandProviderOutbound
+  ]] = {
     for {
       queue <- Queue.bounded[CommandProviderOutbound](10)
       commandsStream = ZStream
@@ -58,7 +75,23 @@ object AzzuroCommands {
                 _
               ) =>
             NamedPromises.complete(instructionId)
-            
+
+          case CommandProviderInbound(
+                CommandProviderInbound.Request.Command(
+                  Command(_, name, _, payload, _, _, _, _, _)
+                ),
+                _,
+                _
+              ) =>
+                val body = payload
+                .map(p => p.data.toStringUtf8)
+                .getOrElse("unknown")
+
+            log.debug(s"About to process command $name with body [$body], $payload") *>
+            CommandExecutor.execute(
+              name,
+              body
+            )
           case outbound => log.info(s"Not processing $outbound")
         }
         .runDrain
@@ -68,61 +101,70 @@ object AzzuroCommands {
     } yield queue
   }
 
-  val live = ZLayer.fromServicesM { 
-    (log: Logger[String], client: ZioCommand.CommandServiceClient.ZService[Any, Any], namedPromises: NamedPromises.Service) =>
-    for {
-      q <- openCommandsStream 
-    } yield new Service {
-      override def sendPermits(count: Long): AIO[Unit] = for {
-        outcome <- q.offer(
-          CommandProviderOutbound(request =
-            CommandProviderOutbound.Request
-              .FlowControl(FlowControl(clientId = "test", permits = count))
-          )
-        )
-        _ <- log.debug(s"Send $count permits")
-      } yield ()
-
-      override def sendCommand(
-          command: Command
-      ): AIO[CommandResponse] =
-        for {
-          _ <- log.debug(s"Sending command $command")
-          response <- ZioCommand.CommandServiceClient
-            .dispatch(command)
-            .provideLayer(ZLayer.succeed(client))
-            .mapError(GrpcError.apply)
-          _ <- log.debug(s"Got command response: $response")
-        } yield response
-
-      override def registerHandler(
-          commandName: String,
-          handler: RIO[ZEnv, Unit]
-      ): AIO[Unit] = {
-
-        val instructionId = UUID.randomUUID.toString
-
-        for {
+  def live = ZLayer.fromServicesM {
+    (
+        log: Logger[String],
+        client: ZioCommand.CommandServiceClient.ZService[Any, Any],
+        namedPromises: NamedPromises.Service,
+        commandsExecutor: CommandExecutor.Service
+    ) =>
+      for {
+        q <- openCommandsStream
+      } yield new Service {
+        override def sendPermits(count: Long): AIO[Unit] = for {
           outcome <- q.offer(
-            CommandProviderOutbound(
-              CommandProviderOutbound.Request.Subscribe(
-                CommandSubscription(
-                  messageId = UUID.randomUUID.toString,
-                  command = commandName,
-                  componentName = "test",
-                  clientId = "1",
-                  loadFactor = 100
-                )
-              ),
-              instructionId = instructionId
+            CommandProviderOutbound(request =
+              CommandProviderOutbound.Request
+                .FlowControl(FlowControl(clientId = "test", permits = count))
             )
           )
-          _ <- log.debug(s"Waiting for $instructionId to complete")
-          _ <- namedPromises.createAndAwait(instructionId)
-          _ <- log.debug(s"Completed $instructionId")
+          _ <- log.debug(s"Send $count permits")
         } yield ()
-      }
 
-    }
+        override def sendCommand(
+            command: Command
+        ): AIO[CommandResponse] =
+          for {
+            _ <- log.debug(s"Sending command $command")
+            response <- ZioCommand.CommandServiceClient
+              .dispatch(command)
+              .provideLayer(ZLayer.succeed(client))
+              .mapError(GrpcError.apply)
+            _ <- log.debug(s"Got command response: $response")
+          } yield response
+
+        override def registerHandler(
+            commandName: String,
+            handler: PartialFunction[Any, Task[Any]],
+            serde: Serde[Any]
+        ): AIO[Unit] = {
+
+          val instructionId = UUID.randomUUID.toString
+
+          for {
+            outcome <- q.offer(
+              CommandProviderOutbound(
+                CommandProviderOutbound.Request.Subscribe(
+                  CommandSubscription(
+                    messageId = UUID.randomUUID.toString,
+                    command = commandName,
+                    componentName = "test",
+                    clientId = "1",
+                    loadFactor = 100
+                  )
+                ),
+                instructionId = instructionId
+              )
+            )
+            _ <- log.debug(
+              s"registered handler for $commandName, Waiting for $instructionId to complete"
+            )
+            _ <- namedPromises.createAndAwait(instructionId)
+            _ <- commandsExecutor.register(commandName, handler, serde)
+            _ <- log.debug(s"Completed $instructionId")
+          } yield ()
+        }
+
+      }
   }
 }
