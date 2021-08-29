@@ -1,4 +1,4 @@
-package com.akolov.azzuro
+package com.akolov.azzuro.common
 
 import zio.macros.accessible
 

@@ -25,6 +25,7 @@ val nixDockerSettings = List(
   )
 )
 ThisBuild / testFrameworks += new TestFramework("zio.test.sbt.ZTestFramework")
+ThisBuild /  PB.protocVersion := "3.17.3"
 
 val commonSettings = Seq(
   scalacOptions ++= Seq(
@@ -43,7 +44,7 @@ lazy val core = (project in file("core"))
     libraryDependencies ++= Seq(
       catsCore,
       scalaTest % Test
-    ),
+    ), 
     libraryDependencies ++= Seq(
       "com.thesamet.scalapb" %% "scalapb-runtime-grpc" % scalapb.compiler.Version.scalapbVersion,
       "com.thesamet.scalapb" %% "scalapb-runtime" % scalapb.compiler.Version.scalapbVersion % "protobuf",
@@ -64,12 +65,14 @@ lazy val core = (project in file("core"))
       "dev.zio" %% "zio-test-sbt" % zioVersion % "it,test",
       "dev.zio" %% "zio-test-magnolia" % zioVersion % "it,test" // optional
     ),
+   
     Compile / PB.targets := Seq(
-      PB.gens.java("3.12.0") -> (Compile / sourceManaged).value / "scalapb",
+      PB.gens.java -> (Compile / sourceManaged).value / "scalapb",
       scalapb
         .gen(grpc = true) -> (Compile / sourceManaged).value / "scalapb",
       scalapb.zio_grpc.ZioCodeGenerator -> (Compile / sourceManaged).value / "scalapb"
     )
+    
   )
   .configs(IntegrationTest)
 
